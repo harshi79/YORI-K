@@ -259,17 +259,37 @@ function deepScan(html, pageUrl) {
     if (dec && offSite(dec)) return { next: dec, via: "base64-in-page" };
   }
 
-  // 4. hidden form inputs named url/link/destination
-  const inputRe = /<input[^>]+name\s*=\s*["']?(url|link|dest|destination|target|redirect|go|token_url|surl)["']?[^>]*>/gi;
+  // 4. hidden form inputs (named url/link/... OR any <input type="hidden"> with a URL/base64 value)
+  const inputRe = /<input\b[^>]*>/gi;
   let im;
   while ((im = inputRe.exec(html))) {
-    const valM = im[0].match(/value\s*=\s*["']([^"']+)["']/i);
+    const tag = im[0];
+    const isNamedTarget = /name\s*=\s*["']?(url|link|dest|destination|target|redirect|go|token_url|surl|final_url|next_url)["']?/i.test(tag);
+    const isHidden = /type\s*=\s*["']?hidden["']?/i.test(tag);
+    if (!isNamedTarget && !isHidden) continue;
+    const valM = tag.match(/value\s*=\s*["']([^"']+)["']/i);
     if (valM) {
-      const direct = cleanUrl(valM[1], pageUrl);
-      if (direct && offSite(direct)) return { next: direct, via: "hidden-form-input" };
+      if (/^https?:\/\//i.test(valM[1]) || isNamedTarget) {
+        const direct = cleanUrl(valM[1], pageUrl);
+        if (direct && offSite(direct) && !/(facebook\.com|twitter\.com|google\.com)/i.test(direct)) {
+          return { next: direct, via: "hidden-form-input" };
+        }
+      }
       const b64 = tryBase64Url(valM[1]);
       if (b64 && offSite(b64)) return { next: b64, via: "hidden-form-input-b64" };
     }
+  }
+
+  // 4b. data-* attributes ([data-url], [data-link], [data-destination], [data-href], [data-redirect])
+  const dataRe = /\bdata-(?:url|link|destination|href|redirect|target|goto)\s*=\s*["']([^"']+)["']/gi;
+  let dm;
+  while ((dm = dataRe.exec(html))) {
+    const direct = cleanUrl(dm[1], pageUrl);
+    if (direct && offSite(direct) && !/(facebook\.com|twitter\.com|google\.com)/i.test(direct)) {
+      return { next: direct, via: "data-attr" };
+    }
+    const b64 = tryBase64Url(dm[1]);
+    if (b64 && offSite(b64)) return { next: b64, via: "data-attr-b64" };
   }
 
   // 5. "skip ad / continue / get link / download" buttons
@@ -279,7 +299,7 @@ function deepScan(html, pageUrl) {
     const label = (am[2] || "").replace(/<[^>]+>/g, " ");
     const attrs = am[0];
     const looksLikeSkip =
-      /skip|continue|get\s*link|go\s*to\s*(link|url|destination)|download|proceed|unlock/i.test(label) ||
+      /skip|continue|get\s*link|go\s*to\s*(link|url|destination)|download|proceed|unlock|claim|verify|next/i.test(label) ||
       /id\s*=\s*["']?(skip|continue|getlink|go-link|btn-main|surl|dl-btn)/i.test(attrs);
     if (!looksLikeSkip) continue;
     const u = cleanUrl(am[1], pageUrl);
@@ -288,12 +308,15 @@ function deepScan(html, pageUrl) {
     if (b64) return { next: b64, via: "skip-button-b64" };
   }
 
-  // 6. JSON blobs in inline scripts: "url":"https:\/\/real.site\/file"
-  const jsonRe = /["'](?:url|link|destination|redirect_url|safelink|download_url|original)["']\s*:\s*["'](https?:[^"']+)["']/gi;
+  // 6. JSON blobs & JS variable assignments in scripts:
+  //    e.g. "destination":"https:\/\/..." OR var final_url = "https://..."
+  const jsonRe = /["']?(?:url|link|destination|target|final_url|goto|next_url|continue_url|redirect_url|safelink|download_url|original)["']?\s*[:=]\s*["'](https?:[^"']+)["']/gi;
   let jm;
   while ((jm = jsonRe.exec(html))) {
     const u = cleanUrl(jm[1], pageUrl);
-    if (u && offSite(u)) return { next: u, via: "json-blob" };
+    if (u && offSite(u) && !/(facebook\.com|twitter\.com|google\.com|\.css|\.js)/i.test(u)) {
+      return { next: u, via: "json-blob" };
+    }
   }
 
   // 7. AdFly `var ysmm = '...'` obfuscated token
@@ -312,6 +335,65 @@ function deepScan(html, pageUrl) {
   }
 
   return null;
+}
+
+/**
+ * Ported from "Universal Shortlink Auto-Bypasser v4.0":
+ * 5-indicator heuristic confidence scorer (0..5) + countdown timer detector.
+ * Detects brand-new shortlink/ad-gate pages even if their domain isn't in AD_GATE_HOSTS.
+ */
+function detectShortlinkPage(html, pageUrl) {
+  const indicators = [];
+  const textOnly = html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ");
+
+  // Indicator 1: Countdown timer in text + extract seconds
+  let countdownSeconds = 0;
+  if (/wait\s+\d+\s+second|please\s+wait|redirect.*\d+|countdown|timer/i.test(textOnly)) {
+    indicators.push("Countdown text detected");
+    const cm =
+      textOnly.match(/wait\s+(\d+)\s+second/i) ||
+      textOnly.match(/retry.*in\s+(\d+)\s+second/i) ||
+      textOnly.match(/please\s+wait[^\d]{0,20}(\d+)/i) ||
+      textOnly.match(/(\d+)\s+seconds?\b/i);
+    if (cm) countdownSeconds = parseInt(cm[1], 10) || 0;
+  }
+
+  // Indicator 2: Continue/Proceed/Get Link/Skip/Verify/Claim button
+  if (
+    /<(?:button|a|input)\b[^>]*>(?:[^<]*?\b(?:continue|proceed|next|get\s*link|skip|verify|claim|retry|unlock)\b)/i.test(html) ||
+    /\bvalue\s*=\s*["'][^"']*(?:continue|proceed|get\s*link|skip|verify|claim|retry)/i.test(html)
+  ) {
+    indicators.push("Continue/Skip button found");
+  }
+
+  // Indicator 3: Shortlink URL pattern
+  if (/\/go\/|\/link\/|\/url\/|short|redirect|forward|safelink|bypass|ad\.fly|shrink/i.test(pageUrl)) {
+    indicators.push("Shortlink URL pattern");
+  }
+
+  // Indicator 4: Meta refresh or JS redirect mechanism
+  if (/<meta[^>]+http-equiv\s*=\s*["']?refresh/i.test(html) || /location\.href|window\.location|location\.replace/i.test(html)) {
+    indicators.push("Redirect mechanism found");
+  }
+
+  // Indicator 5: Typical shortlink elements (ad iframes, loaders, countdown/timer IDs)
+  if (
+    /<iframe[^>]+src\s*=\s*["'][^"']*ads?/i.test(html) ||
+    /\b(?:class|id)\s*=\s*["'][^"']*(?:loader|spinner|loading|timer|countdown|go-link|get-link)/i.test(html)
+  ) {
+    indicators.push("Typical shortlink elements");
+  }
+
+  return {
+    score: indicators.length,
+    max: 5,
+    isShortlink: indicators.length >= 2,
+    countdownSeconds,
+    indicators,
+  };
 }
 
 /**
@@ -434,6 +516,9 @@ async function fetchHop(url, deep) {
       reader.cancel().catch(() => {});
 
       if (deep) {
+        const confidence = detectShortlinkPage(html, url);
+        if (confidence.isShortlink) hop.confidence = confidence;
+
         const found = deepScan(html, url);
         if (found && found.next !== url) {
           hop.type = "deep-scan";
@@ -533,12 +618,14 @@ async function expand(rawUrl, maxHops, deep) {
         deepScan: deep,
         chain,
       };
-      // Stuck on a known captcha/countdown ad-gate?
-      if (isAdGateHost(result.finalHost) && chain.length <= 2) {
+      // Stuck on a known captcha/countdown ad-gate OR heuristic detector scored >= 2 on final hop?
+      if ((isAdGateHost(result.finalHost) && chain.length <= 2) || (hop.confidence && hop.confidence.isShortlink)) {
         result.adGate = true;
+        const ind = hop.confidence ? ` (Confidence ${hop.confidence.score}/5: ${hop.confidence.indicators.join(", ")})` : "";
         result.adGateNote =
-          "This shortener hides the destination behind a captcha/countdown that must be solved by a human in a browser. " +
-          "No server-side tool can fully bypass it. Deep Scan found no embedded destination in the page it serves to first-time visitors.";
+          "This shortener hides the destination behind a captcha/countdown that must be solved by a human in a browser" +
+          ind +
+          ". Deep Scan found no embedded destination in the initial page.";
       }
       return result;
     }

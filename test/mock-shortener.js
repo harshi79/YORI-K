@@ -99,6 +99,21 @@ http
         return res.end(page(`<script>var secret = "${rot}";</script>`));
       }
 
+      // Technique 11 (from Universal Auto-Bypasser v4): data-url / data-destination attribute
+      case "/dataattr/abc123":
+        return res.end(page(`<div class="countdown" id="timer">Please wait 8 seconds...</div>
+          <button data-destination="${DEST}">Proceed</button>`));
+
+      // Technique 12 (from Universal Auto-Bypasser v4): unquoted JS variable assignment (final_url = "...")
+      case "/jsvar/abc123":
+        return res.end(page(`<script>let final_url = "${DEST}";</script>`));
+
+      // Technique 13: Uncrackable captcha wall on an unknown domain -> triggers 0..5 confidence scorer
+      case "/go/locked":
+        return res.end(page(`<div class="spinner" id="timer">Please wait 15 seconds</div>
+          <iframe src="https://ads.example.com/banner"></iframe>
+          <button disabled>Verify &amp; Continue</button>`));
+
       default:
         res.statusCode = 404;
         return res.end(page("<p>404</p>"));
