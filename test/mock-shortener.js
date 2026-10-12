@@ -61,6 +61,44 @@ http
       case "/meta/abc123":
         return res.end(`<html><head><meta http-equiv="refresh" content="3;url=${DEST}"><title>wait...</title></head><body>wait</body></html>`);
 
+      // Technique 9 (from Bloggerpemula BASS): AdLinkFly <form id="go-link" action="/links/go">
+      // The URL is NOT in the HTML at all — only returned as JSON when /links/go is POSTed via XHR!
+      case "/adlinkfly/abc123":
+        res.setHeader("Set-Cookie", "csrfToken=tok_998877; Path=/");
+        return res.end(page(`
+          <form id="go-link" method="post" action="/links/go">
+            <input type="hidden" name="_method" value="POST">
+            <input type="hidden" name="_csrfToken" value="tok_998877">
+            <input type="hidden" name="ad_form_data" value="ENC_BLOB_XYZ">
+          </form>
+          <a href="javascript:void(0)" class="btn get-link disabled">Please wait 10s...</a>`));
+
+      case "/links/go": {
+        let body = "";
+        req.on("data", (c) => (body += c));
+        req.on("end", () => {
+          res.setHeader("Content-Type", "application/json");
+          if (req.headers["x-requested-with"] === "XMLHttpRequest" && body.includes("ad_form_data=ENC_BLOB_XYZ")) {
+            res.end(JSON.stringify({ status: "success", url: DEST }));
+          } else {
+            res.statusCode = 403;
+            res.end(JSON.stringify({ status: "error", message: "Bad XHR/token" }));
+          }
+        });
+        return;
+      }
+
+      // Technique 10 (from BASS): Double-Base64 + ROT13 obfuscated payload
+      case "/rot13b64/abc123": {
+        const b64x2 = Buffer.from(B64).toString("base64");
+        const rot = b64x2.replace(/[a-z]/gi, (c) => {
+          const base = c <= "Z" ? 90 : 122;
+          const code = c.charCodeAt(0) + 13;
+          return String.fromCharCode(base >= code ? code : code - 26);
+        });
+        return res.end(page(`<script>var secret = "${rot}";</script>`));
+      }
+
       default:
         res.statusCode = 404;
         return res.end(page("<p>404</p>"));

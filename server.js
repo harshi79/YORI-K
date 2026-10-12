@@ -75,14 +75,78 @@ function isAdGateHost(hostname) {
   return AD_GATE_HOSTS.some((d) => h === d || h.endsWith("." + d));
 }
 
-function tryBase64Url(s) {
-  if (!s || s.length < 12 || s.length > 4096) return null;
+// Caesar/ROT13 cipher used by Bloggerpemula's BASS script (Decrypter(str, 13))
+function rot13(str, shift = 13) {
+  return String(str).replace(/[a-z]/gi, (c) => {
+    const base = c <= "Z" ? 90 : 122;
+    const code = c.charCodeAt(0) + shift;
+    return String.fromCharCode(base >= code ? code : code - 26);
+  });
+}
+
+function rawB64Decode(s) {
+  if (!s || s.length < 8 || s.length > 4096) return null;
   if (!/^[A-Za-z0-9+/_-]+=*$/.test(s)) return null;
   try {
-    const dec = Buffer.from(s.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8");
-    if (/^https?:\/\/[^\s"'<>]+$/i.test(dec)) return dec;
-  } catch {}
+    return Buffer.from(s.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8");
+  } catch {
+    return null;
+  }
+}
+
+// Supports 1x/2x/3x base64 + ROT13 combinations (BASS DecodeBase64 + Decrypter)
+function tryBase64Url(s) {
+  if (!s || s.length < 12 || s.length > 4096) return null;
+  const variants = [s, rot13(s)];
+  for (let cur of variants) {
+    for (let depth = 0; depth < 3; depth++) {
+      const dec = rawB64Decode(cur);
+      if (!dec) break;
+      for (const candidate of [dec, rot13(dec)]) {
+        let u = candidate;
+        try { if (/%[0-9A-Fa-f]{2}/.test(u)) u = decodeURIComponent(u); } catch {}
+        if (/^https?:\/\/[^\s"'<>]+$/i.test(u)) return u;
+      }
+      cur = dec.trim();
+    }
+  }
   return null;
+}
+
+// Classic AdFly `var ysmm = '...'` decoder
+function decodeAdFlyYsmm(ysmm) {
+  if (!ysmm || ysmm.length < 8) return null;
+  let left = "", right = "";
+  for (let i = 0; i < ysmm.length; i++) {
+    if (i % 2 === 0) left += ysmm[i];
+    else right = ysmm[i] + right;
+  }
+  let arr = (left + right).split("");
+  for (let i = 0; i < arr.length; i++) {
+    if (/\d/.test(arr[i])) {
+      for (let j = i + 1; j < arr.length; j++) {
+        if (/\d/.test(arr[j])) {
+          const s = parseInt(arr[i], 10) ^ parseInt(arr[j], 10);
+          if (s < 10) arr[i] = String(s);
+          i = j;
+          break;
+        }
+      }
+    }
+  }
+  const dec = rawB64Decode(arr.join(""));
+  if (!dec || dec.length <= 32) return null;
+  const stripped = dec.slice(16, -16);
+  return /^https?:\/\//i.test(stripped) ? stripped : null;
+}
+
+// Strip swiftcut.xyz tracking param (from BASS form#go-link handler)
+function cleanBypassedUrl(rawUrl) {
+  let u = rawUrl;
+  if (/swiftcut\.xyz/i.test(u)) {
+    u = u.replace(/[?&]i=[^&]*/g, "").replace(/\?&/, "?").replace(/&&/g, "&").replace(/[?&]$/, "");
+  }
+  return u;
 }
 
 function cleanUrl(raw, baseUrl) {
@@ -110,10 +174,23 @@ function findMetaRefresh(html, baseUrl) {
  */
 function extractFromUrlItself(urlStr) {
   const u = new URL(urlStr);
-  // ?url= / ?link= / ?go= / ?dest= ... plain or base64.
   const candidates = [];
+
+  // BASS extractFlexibleUrl: full-page-script links like
+  //   https://exe.io/st?api=XXXX&url=https://real.com/file
+  //   or chained &url=...&url=... or ?BypassResults=...
+  const flexMatch = urlStr.split(/[?&](?:url|BypassResults)=/i);
+  if (flexMatch.length >= 2) {
+    let tail = flexMatch[flexMatch.length - 1].replace(/&m=1$/, "");
+    try { tail = decodeURIComponent(tail); } catch {}
+    const direct = cleanUrl(tail, urlStr) || tryBase64Url(tail);
+    if (direct && new URL(direct).host !== u.host) {
+      candidates.push({ next: direct, via: "fullpage-script-url" });
+    }
+  }
+
   for (const [k, v] of u.searchParams) {
-    if (/^(url|link|u|go|dest|destination|target|redirect|r|to|out)$/i.test(k)) {
+    if (/^(url|link|u|go|dest|destination|target|redirect|r|to|out|q|s)$/i.test(k)) {
       const direct = cleanUrl(v, urlStr);
       if (direct && new URL(direct).host !== u.host) candidates.push({ next: direct, via: "query-param" });
     }
@@ -219,7 +296,14 @@ function deepScan(html, pageUrl) {
     if (u && offSite(u)) return { next: u, via: "json-blob" };
   }
 
-  // 7. og:url / canonical pointing off-site
+  // 7. AdFly `var ysmm = '...'` obfuscated token
+  const ysmmM = html.match(/ysmm\s*=\s*["']([A-Za-z0-9+/=]{16,})["']/);
+  if (ysmmM) {
+    const u = decodeAdFlyYsmm(ysmmM[1]);
+    if (u && offPage(u)) return { next: u, via: "adfly-ysmm" };
+  }
+
+  // 8. og:url / canonical pointing off-site
   const ogM = html.match(/<meta[^>]+property\s*=\s*["']og:url["'][^>]+content\s*=\s*["']([^"']+)["']/i)
            || html.match(/<link[^>]+rel\s*=\s*["']canonical["'][^>]+href\s*=\s*["']([^"']+)["']/i);
   if (ogM) {
@@ -227,6 +311,72 @@ function deepScan(html, pageUrl) {
     if (u && offSite(u)) return { next: u, via: "og-url" };
   }
 
+  return null;
+}
+
+/**
+ * Ported from Bloggerpemula's "Bypass All Shortlinks" (BASS) userscript:
+ * AdLinkFly shorteners (exe.io, shrinkme, gplinks, shrtfly, cuty.io, etc.)
+ * put a <form id="go-link" action="/links/go"> on the page with hidden CSRF +
+ * ad_form_data tokens and normally make you wait 10s before XHR-POSTing it.
+ * We serialize the form and POST it immediately with X-Requested-With: XMLHttpRequest
+ * to get {"status":"success","url":"https://real-destination..."}.
+ */
+async function tryGoLinkAjax(html, pageUrl, setCookies) {
+  const formM = html.match(/<form\b[^>]*(?:id\s*=\s*["']?go-link["']?|action\s*=\s*["'][^"']*\/links\/go["'])[^>]*>([\s\S]*?)<\/form>/i);
+  if (!formM) return null;
+
+  const formTag = formM[0];
+  const formBody = formM[1];
+  const actM = formTag.match(/action\s*=\s*["']([^"']+)["']/i);
+  const actionUrl = cleanUrl(actM ? actM[1] : "/links/go", pageUrl);
+  if (!actionUrl) return null;
+
+  const params = new URLSearchParams();
+  const inputRe = /<input\b[^>]*>/gi;
+  let im;
+  while ((im = inputRe.exec(formBody))) {
+    const nameM = im[0].match(/name\s*=\s*["']([^"']+)["']/i);
+    const valM = im[0].match(/value\s*=\s*["']([^"']*)["']/i);
+    if (nameM) params.append(nameM[1], valM ? valM[1] : "");
+  }
+
+  const cookieParts = ["ab=2"];
+  for (const c of setCookies || []) {
+    const kv = String(c).split(";")[0].trim();
+    if (kv) cookieParts.push(kv);
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), HOP_TIMEOUT_MS);
+  try {
+    const res = await fetch(actionUrl, {
+      method: "POST",
+      redirect: "manual",
+      signal: controller.signal,
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0 Safari/537.36",
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        "X-Requested-With": "XMLHttpRequest",
+        Accept: "application/json, text/javascript, */*; q=0.01",
+        Origin: new URL(pageUrl).origin,
+        Referer: pageUrl,
+        Cookie: cookieParts.join("; "),
+      },
+      body: params.toString(),
+    });
+    const text = await res.text();
+    try {
+      const data = JSON.parse(text);
+      if (data && data.url) {
+        const cleaned = cleanUrl(cleanBypassedUrl(data.url), pageUrl);
+        if (cleaned) return { next: cleaned, via: "adlinkfly-go-link-ajax" };
+      }
+    } catch {}
+  } catch {} finally {
+    clearTimeout(timer);
+  }
   return null;
 }
 
@@ -289,6 +439,18 @@ async function fetchHop(url, deep) {
           hop.type = "deep-scan";
           hop.via = found.via;
           hop.next = found.next;
+          return hop;
+        }
+        const setCookies =
+          typeof res.headers.getSetCookie === "function"
+            ? res.headers.getSetCookie()
+            : [res.headers.get("set-cookie")].filter(Boolean);
+        const ajaxFound = await tryGoLinkAjax(html, url, setCookies);
+        if (ajaxFound && ajaxFound.next !== url) {
+          hop.type = "deep-scan";
+          hop.via = ajaxFound.via;
+          hop.next = ajaxFound.next;
+          hop.ms = Date.now() - started;
           return hop;
         }
       } else {
