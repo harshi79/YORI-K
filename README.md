@@ -12,14 +12,29 @@ Paste a short link (`bit.ly`, `tinyurl`, `t.co`, `is.gd`, ad-gate shorteners, ne
 
 Zero dependencies. Pure Node.js. No database, no logs, no ads.
 
-## Run it
+## Deploy on Render (Free Tier)
+
+This repo includes `package.json` and `render.yaml` so you can host it publicly on [Render](https://render.com) in 60 seconds:
+
+1. Go to **Render Dashboard → New → Web Service** (or **Blueprint**) and connect `harshi79/YORI-K`.
+2. Settings (auto-detected from `render.yaml` / `package.json`):
+   - **Runtime**: `Node`
+   - **Build Command**: `npm install`
+   - **Start Command**: `npm start`
+   - **Health Check Path**: `/api/health`
+3. Once live at `https://your-app.onrender.com`, anyone can bypass links in 3 ways:
+   - **Web UI**: Paste any link at `https://your-app.onrender.com`
+   - **URL-bar shortcut** (like `bypass.city`): prepend your site to any shortlink — `https://your-app.onrender.com/https://exe.io/abc123`
+   - **Browser Userscript** (for Cloudflare Turnstile walls): click **Install Companion Userscript** (`/unshort-bypass.user.js`)
+
+## Run locally
 
 ```bash
-node server.js
+npm start
 # → UnShort listening on http://0.0.0.0:3000
 ```
 
-Requires Node.js ≥ 18 (uses built-in `fetch`). That's it — no `npm install`.
+Requires Node.js ≥ 18 (uses built-in `fetch`). Zero npm dependencies.
 
 ## Developer API
 

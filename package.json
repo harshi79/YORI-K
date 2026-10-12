@@ -1,0 +1,14 @@
+{
+  "name": "unshort-bypass",
+  "version": "2.0.0",
+  "description": "Fast, free shortlink & ad-gate bypasser web app + JSON API (zero dependencies)",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test:mock": "node test/mock-shortener.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "license": "MIT"
+}

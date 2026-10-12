@@ -764,11 +764,39 @@ async function expand(rawUrl, maxHops, deep) {
 const PUBLIC_DIR = path.join(__dirname, "public");
 const MIME = { ".html": "text/html", ".css": "text/css", ".js": "text/javascript", ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon" };
 
+// Lightweight per-IP rate limiter for public Render deployments (60 req/min/IP)
+const RATE_LIMIT_MAX = parseInt(process.env.RATE_LIMIT_MAX, 10) || 60;
+const rateBuckets = new Map();
+function checkRateLimit(req) {
+  const ip = String(req.headers["x-forwarded-for"] || req.socket.remoteAddress || "anon").split(",")[0].trim();
+  const now = Date.now();
+  let b = rateBuckets.get(ip);
+  if (!b || now - b.start > 60_000) {
+    b = { start: now, count: 0 };
+    rateBuckets.set(ip, b);
+  }
+  b.count++;
+  if (rateBuckets.size > 5000) rateBuckets.clear();
+  return b.count <= RATE_LIMIT_MAX;
+}
+
 const server = http.createServer(async (req, res) => {
   const u = new URL(req.url, `http://${req.headers.host || "localhost"}`);
   res.setHeader("Access-Control-Allow-Origin", "*");
 
+  // URL-bar shortcut like bypass.city:
+  // Visit https://your-app.onrender.com/https://exe.io/abc -> redirects to /?url=...
+  if (/^\/https?:\/\//i.test(req.url)) {
+    const rawTarget = req.url.slice(1);
+    res.writeHead(302, { Location: "/?url=" + encodeURIComponent(rawTarget) });
+    return res.end();
+  }
+
   if (u.pathname === "/api/expand") {
+    if (!checkRateLimit(req)) {
+      res.writeHead(429, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ ok: false, error: "Rate limit exceeded (max 60 requests/min). Try again in a moment." }));
+    }
     const target = u.searchParams.get("url");
     const max = Math.min(parseInt(u.searchParams.get("max"), 10) || MAX_HOPS_DEFAULT, MAX_HOPS_LIMIT);
     const deep = u.searchParams.get("deep") !== "0"; // deep scan ON by default

@@ -155,7 +155,11 @@
     <button class="go" id="go" type="submit">Expand →</button>
   </form>
   <div class="examples" id="examples"></div>
-  <p class="hint">Tip: works on <code>bit.ly</code>, <code>tinyurl</code>, <code>t.co</code>, <code>exe.io</code>, <code>exeygo.com</code>, <code>shrinkme</code>, <code>gplinks</code> &amp; nested chains. For Cloudflare Turnstile walls, install our <a href="/unshort-bypass.user.js" target="_blank" style="color:var(--accent)">⚡ UnShort AIO Userscript (unshort-bypass.user.js)</a>.</p>
+  <p class="hint">Tip: works on <code>bit.ly</code>, <code>tinyurl</code>, <code>t.co</code>, <code>exe.io</code>, <code>exeygo.com</code>, <code>shrinkme</code>, <code>gplinks</code> &amp; nested chains. Shortcut: prepend <code id="shortcutbase">this site/</code> before any link · <a href="/unshort-bypass.user.js" target="_blank" style="color:var(--accent)">⚡ Install Companion Userscript</a></p>
+  <label style="display:flex;align-items:center;gap:8px;justify-content:center;margin-top:10px;font-size:12.5px;color:var(--muted);cursor:pointer;">
+    <input type="checkbox" id="autoredirect" style="accent-color:var(--accent)" />
+    Auto-open destination as soon as link is bypassed
+  </label>
 
   <div class="error-box" id="errbox"></div>
 
@@ -163,7 +167,10 @@
     <div class="card">
       <div class="card-head">
         <span>✅ Real destination</span>
-        <button class="copy-btn" id="copybtn">copy</button>
+        <div style="display:flex;gap:8px;">
+          <a class="copy-btn" id="openbtn" href="#" target="_blank" rel="noopener noreferrer nofollow" style="text-decoration:none;">open ↗</a>
+          <button class="copy-btn" id="copybtn">copy</button>
+        </div>
       </div>
       <div class="final-url"><a id="finalurl" href="#" target="_blank" rel="noopener noreferrer nofollow"></a></div>
       <div class="meta-row" id="metarow"></div>
@@ -253,6 +260,11 @@ $("form").addEventListener("submit", async (e) => {
     const final = data.finalUrl || data.chain[data.chain.length - 1].url;
     $("finalurl").textContent = final;
     $("finalurl").href = final;
+    $("openbtn").href = final;
+
+    if ($("autoredirect").checked && data.ok && !data.adGate && final) {
+      window.location.href = final;
+    }
 
     // badges
     const meta = $("metarow");
@@ -307,6 +319,19 @@ $("copybtn").addEventListener("click", async () => {
   $("copybtn").textContent = "copied ✓";
   setTimeout(() => ($("copybtn").textContent = "copy"), 1500);
 });
+
+$("shortcutbase").textContent = location.origin + "/";
+$("autoredirect").checked = localStorage.getItem("unshort_autoredirect") === "1";
+$("autoredirect").addEventListener("change", (e) => {
+  localStorage.setItem("unshort_autoredirect", e.target.checked ? "1" : "0");
+});
+
+// Auto-expand if opened with ?url=... (or redirected from /https://...)
+const initUrl = new URLSearchParams(location.search).get("url");
+if (initUrl) {
+  $("url").value = initUrl;
+  $("form").requestSubmit();
+}
 </script>
 </body>
 </html>
