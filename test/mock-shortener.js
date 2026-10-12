@@ -114,6 +114,29 @@ http
           <iframe src="https://ads.example.com/banner"></iframe>
           <button disabled>Verify &amp; Continue</button>`));
 
+      // Technique 14 (from ArvindSaini978 Exe.io v1.1.0):
+      // Step 1 <form id="before-captcha"> + ad-network decoys (llvpn.com, cleverwebserver.com)
+      // Server must ignore the ad-network scripts, POST form#before-captcha -> /adlinkfly/abc123 -> /links/go -> DEST!
+      case "/exe/step1":
+        res.setHeader("Set-Cookie", "csrfToken=tok_998877; Path=/");
+        return res.end(page(`
+          <script>window.open("https://llvpn.com/popup");</script>
+          <a href="https://cleverwebserver.com/clickjack">Click here</a>
+          <form id="before-captcha" method="POST" action="/adlinkfly/abc123">
+            <input type="hidden" name="ref" value="exe">
+            <button type="submit">Continue</button>
+          </form>`));
+
+      // Technique 15 (from ArvindSaini978 Exe.io v1.1.0):
+      // Step 2 <form id="link-view"> with Cloudflare Turnstile ([name="cf-turnstile-response"])
+      case "/exe/turnstile":
+        return res.end(page(`
+          <form id="link-view" method="POST" action="/exe/step3">
+            <div class="cf-turnstile" data-sitekey="0x4AAAAAAA"></div>
+            <input type="hidden" name="cf-turnstile-response" value="">
+            <button type="submit">Continue</button>
+          </form>`));
+
       default:
         res.statusCode = 404;
         return res.end(page("<p>404</p>"));

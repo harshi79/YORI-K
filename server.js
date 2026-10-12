@@ -84,11 +84,17 @@ function rot13(str, shift = 13) {
   });
 }
 
+// Ad-network & clickjack domains from ArvindSaini978's Exe.io/Exeygo bypass + BASS
+const AD_NETWORK_PATTERN =
+  /(llvpn\.com|cleverwebserver\.com|abscloud\.org|doubleclick\.net|justkoalas\.com|adsterra|monetag|hilltopads|googlesyndication|popads|propellerads)/i;
+
 function rawB64Decode(s) {
   if (!s || s.length < 8 || s.length > 4096) return null;
-  if (!/^[A-Za-z0-9+/_-]+=*$/.test(s)) return null;
+  let cleaned = String(s).trim().replace(/-/g, "+").replace(/_/g, "/");
+  if (!/^[A-Za-z0-9+/]+=*$/.test(cleaned)) return null;
+  while (cleaned.length % 4 !== 0) cleaned += "=";
   try {
-    return Buffer.from(s.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8");
+    return Buffer.from(cleaned, "base64").toString("utf8");
   } catch {
     return null;
   }
@@ -221,13 +227,17 @@ function deepScan(html, pageUrl) {
     try {
       const t = new URL(uStr);
       if (t.href === page.href) return false;
+      if (AD_NETWORK_PATTERN.test(t.hostname)) return false;
       // ignore links to common junk
       if (/\.(png|jpe?g|gif|svg|css|woff2?|ico)(\?|$)/i.test(t.pathname)) return false;
       return true;
     } catch { return false; }
   };
   const offSite = (uStr) => {
-    try { return new URL(uStr).host !== page.host; } catch { return false; }
+    try {
+      const t = new URL(uStr);
+      return t.host !== page.host && !AD_NETWORK_PATTERN.test(t.hostname);
+    } catch { return false; }
   };
 
   // 1. meta-refresh
@@ -462,6 +472,109 @@ async function tryGoLinkAjax(html, pageUrl, setCookies) {
   return null;
 }
 
+/**
+ * Ported from ArvindSaini978's "Exe.io & Exeygo Bypass v1.1.0":
+ * Detects Cloudflare Turnstile / hCaptcha / reCAPTCHA on Step 2 (form#link-view),
+ * and auto-submits Step 1 (<form id="before-captcha"> or "Continue" form) via POST.
+ */
+function detectCaptchaWall(html) {
+  if (/cf-turnstile-response|class\s*=\s*["'][^"']*cf-turnstile/i.test(html)) return "Cloudflare Turnstile";
+  if (/h-captcha-response|newassets\.hcaptcha\.com/i.test(html)) return "hCaptcha";
+  if (/g-recaptcha-response|google\.com\/recaptcha/i.test(html)) return "reCAPTCHA";
+  if (/iconcaptcha-modal/i.test(html)) return "IconCaptcha";
+  return null;
+}
+
+async function tryExeStepForm(html, pageUrl, setCookies) {
+  // Match <form id="before-captcha"> (Exe.io Step 1), <form id="link-view"> (Step 2 if no captcha),
+  // or a <form> wrapping a "Continue" / "Click here to continue" submit button.
+  const formRegexes = [
+    { re: /<form\b[^>]*\bid\s*=\s*["']?before-captcha["']?[^>]*>([\s\S]*?)<\/form>/i, via: "exe-step1-before-captcha" },
+    { re: /<form\b[^>]*\bid\s*=\s*["']?link-view["']?[^>]*>([\s\S]*?)<\/form>/i, via: "exe-step2-link-view" },
+    { re: /<form\b[^>]*>([\s\S]*?(?:Click here to continue|>Continue<)[\s\S]*?)<\/form>/i, via: "exe-continue-form" },
+  ];
+
+  let matched = null;
+  for (const item of formRegexes) {
+    const m = html.match(item.re);
+    if (m) {
+      // If the form contains an unsolved captcha widget (e.g. Cloudflare Turnstile), cannot POST without token
+      if (detectCaptchaWall(m[0])) continue;
+      matched = { formTag: m[0], formBody: m[1], via: item.via };
+      break;
+    }
+  }
+  if (!matched) return null;
+
+  const actM = matched.formTag.match(/action\s*=\s*["']([^"']+)["']/i);
+  const actionUrl = cleanUrl(actM ? actM[1] : pageUrl, pageUrl);
+  if (!actionUrl) return null;
+
+  const params = new URLSearchParams();
+  const inputRe = /<input\b[^>]*>/gi;
+  let im;
+  while ((im = inputRe.exec(matched.formBody))) {
+    const nameM = im[0].match(/name\s*=\s*["']([^"']+)["']/i);
+    const valM = im[0].match(/value\s*=\s*["']([^"']*)["']/i);
+    if (nameM) params.append(nameM[1], valM ? valM[1] : "");
+  }
+
+  const cookieParts = ["ab=2"];
+  for (const c of setCookies || []) {
+    const kv = String(c).split(";")[0].trim();
+    if (kv) cookieParts.push(kv);
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), HOP_TIMEOUT_MS);
+  try {
+    const res = await fetch(actionUrl, {
+      method: "POST",
+      redirect: "manual",
+      signal: controller.signal,
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0 Safari/537.36",
+        "Content-Type": "application/x-www-form-urlencoded",
+        Accept: "text/html,application/xhtml+xml,*/*;q=0.8",
+        Origin: new URL(pageUrl).origin,
+        Referer: pageUrl,
+        Cookie: cookieParts.join("; "),
+      },
+      body: params.toString(),
+    });
+
+    if (res.status >= 300 && res.status < 400) {
+      const loc = res.headers.get("location");
+      res.body?.cancel?.().catch(() => {});
+      if (loc) return { next: new URL(loc, actionUrl).toString(), via: matched.via };
+    }
+
+    const nextHtml = await res.text();
+    const postCookies = [
+      ...(setCookies || []),
+      ...(typeof res.headers.getSetCookie === "function"
+        ? res.headers.getSetCookie()
+        : [res.headers.get("set-cookie")].filter(Boolean)),
+    ];
+
+    const scanned = deepScan(nextHtml, actionUrl);
+    if (scanned && scanned.next !== pageUrl) {
+      return { next: scanned.next, via: `${matched.via}+${scanned.via}` };
+    }
+    const ajax = await tryGoLinkAjax(nextHtml, actionUrl, postCookies);
+    if (ajax) {
+      return { next: ajax.next, via: `${matched.via}+${ajax.via}` };
+    }
+    if (actionUrl !== pageUrl) {
+      return { next: actionUrl, via: matched.via };
+    }
+  } catch {} finally {
+    clearTimeout(timer);
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------- engine
 
 async function fetchHop(url, deep) {
@@ -538,6 +651,16 @@ async function fetchHop(url, deep) {
           hop.ms = Date.now() - started;
           return hop;
         }
+        const stepFound = await tryExeStepForm(html, url, setCookies);
+        if (stepFound && stepFound.next !== url) {
+          hop.type = "deep-scan";
+          hop.via = stepFound.via;
+          hop.next = stepFound.next;
+          hop.ms = Date.now() - started;
+          return hop;
+        }
+        const captchaWall = detectCaptchaWall(html);
+        if (captchaWall) hop.captchaWall = captchaWall;
       } else {
         const meta = findMetaRefresh(html, url);
         if (meta && meta !== url) {
@@ -619,13 +742,14 @@ async function expand(rawUrl, maxHops, deep) {
         chain,
       };
       // Stuck on a known captcha/countdown ad-gate OR heuristic detector scored >= 2 on final hop?
-      if ((isAdGateHost(result.finalHost) && chain.length <= 2) || (hop.confidence && hop.confidence.isShortlink)) {
+      if ((isAdGateHost(result.finalHost) && chain.length <= 2) || (hop.confidence && hop.confidence.isShortlink) || hop.captchaWall) {
         result.adGate = true;
+        result.captchaWall = hop.captchaWall || null;
+        const wall = hop.captchaWall ? ` [${hop.captchaWall}]` : "";
         const ind = hop.confidence ? ` (Confidence ${hop.confidence.score}/5: ${hop.confidence.indicators.join(", ")})` : "";
         result.adGateNote =
-          "This shortener hides the destination behind a captcha/countdown that must be solved by a human in a browser" +
-          ind +
-          ". Deep Scan found no embedded destination in the initial page.";
+          `This step requires a browser captcha token${wall}${ind}. ` +
+          "Install the companion UnShort Userscript (/unshort-bypass.user.js) in Tampermonkey/Violentmonkey to auto-bypass Step 1, Turnstile, and the countdown in your browser.";
       }
       return result;
     }
