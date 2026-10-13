@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>UnShort — reveal the real link behind any short URL</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔗</text></svg>">
+<style>
+  :root {
+    --bg: #0b0e14;
+    --panel: #121722;
+    --panel2: #0e1320;
+    --border: #1f2937;
+    --text: #e5e9f0;
+    --muted: #8b95a7;
+    --accent: #22d3ee;
+    --accent2: #a78bfa;
+    --green: #34d399;
+    --red: #f87171;
+    --amber: #fbbf24;
+    --mono: "JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: radial-gradient(1200px 600px at 70% -10%, #122033 0%, var(--bg) 55%);
+    color: var(--text);
+    font-family: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    min-height: 100vh;
+  }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 48px 20px 80px; }
+
+  header { text-align: center; margin-bottom: 36px; }
+  .logo {
+    font-size: 42px; font-weight: 800; letter-spacing: -1.5px;
+    background: linear-gradient(90deg, var(--accent), var(--accent2));
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .logo .chain { -webkit-text-fill-color: initial; }
+  .tagline { color: var(--muted); margin-top: 10px; font-size: 15px; }
+  .tagline b { color: var(--text); }
+
+  .searchbox {
+    display: flex; gap: 10px; margin: 28px 0 10px;
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 14px; padding: 10px;
+    box-shadow: 0 10px 40px rgba(0,0,0,.35);
+  }
+  .searchbox:focus-within { border-color: var(--accent); }
+  input[type="url"] {
+    flex: 1; background: transparent; border: 0; outline: 0;
+    color: var(--text); font-size: 16px; font-family: var(--mono); padding: 10px 8px;
+  }
+  input::placeholder { color: #4b5563; }
+  button.go {
+    background: linear-gradient(90deg, var(--accent), var(--accent2));
+    color: #0b0e14; font-weight: 700; font-size: 15px;
+    border: 0; border-radius: 10px; padding: 12px 26px; cursor: pointer;
+    transition: transform .08s ease, filter .15s ease;
+  }
+  button.go:hover { filter: brightness(1.12); }
+  button.go:active { transform: scale(.97); }
+  button.go:disabled { filter: grayscale(.7); cursor: wait; }
+
+  .hint { color: var(--muted); font-size: 12.5px; text-align: center; margin-bottom: 26px; }
+  .hint code { font-family: var(--mono); color: var(--accent); }
+
+  .examples { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; margin-bottom: 8px; }
+  .chip {
+    font-family: var(--mono); font-size: 12px; color: var(--muted);
+    border: 1px solid var(--border); border-radius: 999px; padding: 5px 12px;
+    cursor: pointer; background: var(--panel2); transition: all .15s;
+  }
+  .chip:hover { color: var(--accent); border-color: var(--accent); }
+
+  /* results */
+  #result { margin-top: 26px; display: none; }
+  .card {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 14px; overflow: hidden; margin-bottom: 18px;
+  }
+  .card-head {
+    padding: 14px 18px; font-size: 13px; font-weight: 600; letter-spacing: .4px;
+    text-transform: uppercase; color: var(--muted);
+    border-bottom: 1px solid var(--border); display:flex; justify-content: space-between; align-items:center;
+  }
+  .final-url {
+    padding: 20px 18px; font-family: var(--mono); font-size: 16px;
+    word-break: break-all; color: var(--green);
+  }
+  .final-url a { color: var(--green); text-decoration: none; border-bottom: 1px dashed #34d39966; }
+  .final-url a:hover { border-bottom-style: solid; }
+  .meta-row { padding: 0 18px 16px; display: flex; gap: 10px; flex-wrap: wrap; }
+  .badge {
+    font-size: 12px; font-family: var(--mono); padding: 4px 10px;
+    border-radius: 6px; border: 1px solid var(--border); color: var(--muted);
+  }
+  .badge.ok { color: var(--green); border-color: #34d39944; }
+  .badge.warn { color: var(--amber); border-color: #fbbf2444; }
+  .badge.bad { color: var(--red); border-color: #f8717144; }
+
+  .copy-btn {
+    font-size: 12px; font-family: var(--mono); cursor: pointer;
+    background: transparent; color: var(--accent); border: 1px solid var(--accent);
+    border-radius: 6px; padding: 4px 12px; transition: all .15s;
+  }
+  .copy-btn:hover { background: var(--accent); color: #0b0e14; }
+
+  .hop { display: flex; gap: 14px; padding: 13px 18px; border-bottom: 1px solid var(--border); align-items: baseline; }
+  .hop:last-child { border-bottom: 0; }
+  .hop-num {
+    font-family: var(--mono); font-size: 12px; color: var(--muted);
+    min-width: 22px; text-align: right;
+  }
+  .hop-status { font-family: var(--mono); font-size: 13px; min-width: 42px; font-weight: 700; }
+  .s3xx { color: var(--amber); } .s2xx { color: var(--green); } .s0, .s4xx, .s5xx { color: var(--red); }
+  .hop-url { font-family: var(--mono); font-size: 13px; word-break: break-all; color: var(--text); flex: 1; }
+  .hop-ms { font-family: var(--mono); font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+  .hop-tag { font-size: 10.5px; font-family: var(--mono); color: var(--accent2); }
+
+  .error-box {
+    background: #2d1215; border: 1px solid #f8717144; color: var(--red);
+    border-radius: 12px; padding: 16px 18px; font-size: 14px; margin-top: 26px; display: none;
+  }
+
+  /* API docs */
+  details.api { margin-top: 40px; border: 1px solid var(--border); border-radius: 14px; background: var(--panel2); }
+  details.api summary {
+    cursor: pointer; padding: 16px 18px; font-weight: 600; font-size: 14px; color: var(--accent);
+    list-style: none;
+  }
+  details.api summary::before { content: "▸ "; }
+  details.api[open] summary::before { content: "▾ "; }
+  .api-body { padding: 0 18px 20px; font-size: 13.5px; color: var(--muted); line-height: 1.7; }
+  pre {
+    background: #0a0d13; border: 1px solid var(--border); border-radius: 10px;
+    padding: 14px 16px; overflow-x: auto; font-family: var(--mono); font-size: 12.5px;
+    color: #c9d4e3; margin: 10px 0;
+  }
+  .k { color: var(--accent); } .v { color: var(--green); }
+
+  footer { text-align: center; margin-top: 48px; color: #3f4a5c; font-size: 12.5px; }
+  .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid #0b0e1455; border-top-color: #0b0e14; border-radius: 50%; animation: spin .7s linear infinite; vertical-align: -2px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo"><span class="chain">🔗</span> UnShort</div>
+    <p class="tagline">Paste any short link. See the <b>real destination</b> — full redirect chain, status codes, timing — <b>without ever clicking it</b>. Now with <b>🔬 Deep Scan</b>: reverse-engineers shortener pages (JS redirects, base64 blobs, hidden forms, skip buttons) to dig out hidden destinations.</p>
+  </header>
+
+  <form id="form" class="searchbox" autocomplete="off">
+    <input id="url" type="url" placeholder="https://bit.ly/abc123  ·  tinyurl.com/xyz  ·  t.co/…" required />
+    <button class="go" id="go" type="submit">Expand →</button>
+  </form>
+  <div class="examples" id="examples"></div>
+  <p class="hint">Tip: works on <code>bit.ly</code>, <code>tinyurl</code>, <code>t.co</code>, <code>exe.io</code>, <code>exeygo.com</code>, <code>shrinkme</code>, <code>gplinks</code> &amp; nested chains. Shortcut: prepend <code id="shortcutbase">this site/</code> before any link · <a href="/unshort-bypass.user.js" target="_blank" style="color:var(--accent)">⚡ Install Companion Userscript</a></p>
+  <label style="display:flex;align-items:center;gap:8px;justify-content:center;margin-top:10px;font-size:12.5px;color:var(--muted);cursor:pointer;">
+    <input type="checkbox" id="autoredirect" style="accent-color:var(--accent)" />
+    Auto-open destination as soon as link is bypassed
+  </label>
+
+  <div class="error-box" id="errbox"></div>
+
+  <div id="result">
+    <div class="card">
+      <div class="card-head">
+        <span>✅ Real destination</span>
+        <div style="display:flex;gap:8px;">
+          <a class="copy-btn" id="openbtn" href="#" target="_blank" rel="noopener noreferrer nofollow" style="text-decoration:none;">open ↗</a>
+          <button class="copy-btn" id="copybtn">copy</button>
+        </div>
+      </div>
+      <div class="final-url"><a id="finalurl" href="#" target="_blank" rel="noopener noreferrer nofollow"></a></div>
+      <div class="meta-row" id="metarow"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><span>🧭 Redirect chain</span><span id="chaincount" style="text-transform:none"></span></div>
+      <div id="chain"></div>
+    </div>
+  </div>
+
+  <details class="api">
+    <summary>Developer API — free, no key, CORS enabled</summary>
+    <div class="api-body">
+      <p>One endpoint. Returns JSON. Use it in scripts, CI, bots, anywhere:</p>
+      <pre>curl "<span id="apibase">…</span>/api/expand?url=https://bit.ly/abc123"</pre>
+      <p>Response:</p>
+      <pre>{
+  <span class="k">"ok"</span>: <span class="v">true</span>,
+  <span class="k">"finalUrl"</span>: <span class="v">"https://the-real-site.com/page"</span>,
+  <span class="k">"finalHost"</span>: <span class="v">"the-real-site.com"</span>,
+  <span class="k">"https"</span>: <span class="v">true</span>,
+  <span class="k">"redirects"</span>: <span class="v">2</span>,
+  <span class="k">"chain"</span>: [ { <span class="k">"url"</span>, <span class="k">"status"</span>, <span class="k">"ms"</span>, <span class="k">"type"</span>, <span class="k">"next"</span> }, … ]
+}</pre>
+      <p>Optional: <code style="color:var(--accent)">&amp;max=30</code> to raise the hop limit (default 15). Health check at <code style="color:var(--accent)">/api/health</code>.</p>
+      <p>Quick one-liner to get just the final URL:</p>
+      <pre>curl -s "…/api/expand?url=$LINK" | jq -r .finalUrl</pre>
+    </div>
+  </details>
+
+  <footer>UnShort · expands links server-side so your IP never touches the shortener · no logs, no ads, no BS</footer>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+$("apibase").textContent = location.origin;
+
+const EXAMPLES = [
+  "https://github.com/harshi79/YORI-K/tarball/main",
+  "http://github.com",
+  "https://registry.npmjs.org/-/v1/login",
+];
+for (const ex of EXAMPLES) {
+  const c = document.createElement("span");
+  c.className = "chip"; c.textContent = ex.replace(/^https?:\/\//, "");
+  c.onclick = () => { $("url").value = ex; $("form").requestSubmit(); };
+  $("examples").appendChild(c);
+}
+
+function statusClass(s) {
+  if (s >= 300 && s < 400) return "s3xx";
+  if (s >= 200 && s < 300) return "s2xx";
+  if (s >= 500) return "s5xx";
+  if (s >= 400) return "s4xx";
+  return "s0";
+}
+
+function badge(text, cls) {
+  const b = document.createElement("span");
+  b.className = "badge " + (cls || "");
+  b.textContent = text;
+  return b;
+}
+
+$("form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const url = $("url").value.trim();
+  if (!url) return;
+
+  $("go").disabled = true;
+  $("go").innerHTML = '<span class="spinner"></span>';
+  $("errbox").style.display = "none";
+  $("result").style.display = "none";
+
+  try {
+    const r = await fetch("/api/expand?url=" + encodeURIComponent(url));
+    const data = await r.json();
+
+    if (!data.ok && !data.chain?.length) {
+      $("errbox").textContent = "⚠ " + (data.error || "Something went wrong.");
+      $("errbox").style.display = "block";
+      return;
+    }
+
+    // final URL
+    const final = data.finalUrl || data.chain[data.chain.length - 1].url;
+    $("finalurl").textContent = final;
+    $("finalurl").href = final;
+    $("openbtn").href = final;
+
+    if ($("autoredirect").checked && data.ok && !data.adGate && final) {
+      window.location.href = final;
+    }
+
+    // badges
+    const meta = $("metarow");
+    meta.innerHTML = "";
+    meta.appendChild(badge(data.https ?? final.startsWith("https://") ? "🔒 HTTPS" : "⚠ not HTTPS (http://)", final.startsWith("https://") ? "ok" : "warn"));
+    meta.appendChild(badge((data.redirects ?? Math.max(0, data.chain.length - 1)) + " redirect(s)"));
+    const totalMs = data.chain.reduce((a, h) => a + (h.ms || 0), 0);
+    meta.appendChild(badge(totalMs + " ms total"));
+    if (data.title) meta.appendChild(badge("📄 " + data.title.slice(0, 60)));
+    if (data.partial) meta.appendChild(badge("partial — last hop unreachable from this server", "warn"));
+    const cracked = data.chain.filter(h => h.type === "deep-scan");
+    if (cracked.length) meta.appendChild(badge("🔬 deep-scan cracked " + cracked.length + " hidden hop(s)", "warn"));
+
+    // chain
+    const chainEl = $("chain");
+    chainEl.innerHTML = "";
+    data.chain.forEach((h, i) => {
+      const row = document.createElement("div");
+      row.className = "hop";
+      const tag = h.type === "deep-scan" ? ' <span class="hop-tag">[🔬 ' + (h.via || "deep-scan") + ']</span>'
+                : h.type === "error" ? ' <span class="hop-tag" style="color:var(--red)">[' + h.statusText + ']</span>' : "";
+      const statusTxt = h.status === null ? "B64" : (h.status || "ERR");
+      row.innerHTML =
+        '<span class="hop-num">' + (i + 1) + '</span>' +
+        '<span class="hop-status ' + (h.status === null ? "s3xx" : statusClass(h.status)) + '">' + statusTxt + '</span>' +
+        '<span class="hop-url">' + h.url.replace(/&/g, "&amp;").replace(/</g, "&lt;") + tag + '</span>' +
+        '<span class="hop-ms">' + (h.ms != null ? h.ms + " ms" : "") + '</span>';
+      chainEl.appendChild(row);
+    });
+    $("chaincount").textContent = data.chain.length + " hop(s)";
+
+    if (data.error) {
+      $("errbox").textContent = "⚠ " + data.error;
+      $("errbox").style.display = "block";
+    }
+    if (data.adGate) {
+      $("errbox").textContent = "🧱 Ad-gate detected: " + data.adGateNote;
+      $("errbox").style.display = "block";
+    }
+    $("result").style.display = "block";
+  } catch (err) {
+    $("errbox").textContent = "⚠ Request failed: " + err.message;
+    $("errbox").style.display = "block";
+  } finally {
+    $("go").disabled = false;
+    $("go").textContent = "Expand →";
+  }
+});
+
+$("copybtn").addEventListener("click", async () => {
+  await navigator.clipboard.writeText($("finalurl").textContent);
+  $("copybtn").textContent = "copied ✓";
+  setTimeout(() => ($("copybtn").textContent = "copy"), 1500);
+});
+
+$("shortcutbase").textContent = location.origin + "/";
+$("autoredirect").checked = localStorage.getItem("unshort_autoredirect") === "1";
+$("autoredirect").addEventListener("change", (e) => {
+  localStorage.setItem("unshort_autoredirect", e.target.checked ? "1" : "0");
+});
+
+// Auto-expand if opened with ?url=... (or redirected from /https://...)
+const initUrl = new URLSearchParams(location.search).get("url");
+if (initUrl) {
+  $("url").value = initUrl;
+  $("form").requestSubmit();
+}
+</script>
+</body>
+</html>
